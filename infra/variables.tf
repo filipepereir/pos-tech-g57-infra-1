@@ -31,5 +31,5 @@ variable "user_name" {
 
 variable "bucket_name" {
   type    = string
-  default = "tfstate-backend-postech-g57"
+  default = "tfstate-backend-postech-g57777"
 }
