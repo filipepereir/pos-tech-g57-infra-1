@@ -8,3 +8,5 @@ tags = {
   Environment = "Production",
   Year = "2025"
 } # Tags para os recursos criados
+
+domain_name = "pos-tech-g57-food-app.com.br" # Nome de domínio para a aplicação

@@ -33,3 +33,10 @@ variable "bucket_name" {
   type    = string
   default = "tfstate-backend-postech-g57777"
 }
+
+variable "domain_name" {
+  description = "Domain name for the application"
+  type        = string
+  default     = "pos-tech-g57-food-app.com.br"
+}
+
