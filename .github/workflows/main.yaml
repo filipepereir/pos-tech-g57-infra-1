@@ -1,0 +1,113 @@
+name: Terraform Deploy
+on:
+  push:
+    branches:
+    - main
+    - develop
+  pull_request:
+    branches:
+    - main
+    - develop
+
+jobs:
+  terraform:
+    name: Terraform Pipeline
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: 1.5.0
+
+    - name: Load Terraform Variables
+      id: tfvars
+      working-directory: infra
+      run: |
+        BUCKET=$(grep tfstate_bucket terraform.tfvars | cut -d'=' -f2 | tr -d ' "')
+        REGION=$(grep tfstate_region terraform.tfvars | cut -d'=' -f2 | tr -d ' "')
+        KEY=$(grep tfstate_key_apigw terraform.tfvars | cut -d'=' -f2 | tr -d ' "')
+        echo "TFSTATE_BUCKET=$BUCKET" >> $GITHUB_ENV
+        echo "TFSTATE_REGION=$REGION" >> $GITHUB_ENV
+        echo "TFSTATE_KEY=$KEY" >> $GITHUB_ENV
+
+    - name: Check if S3 bucket exists
+      id: bucket_check
+      run: |
+        if aws s3api head-bucket --bucket $TFSTATE_BUCKET 2>/dev/null; then
+          echo "bucket_exists=true" >> $GITHUB_ENV
+          echo "bucket_exists=true" >> $GITHUB_OUTPUT
+          echo "Bucket $TFSTATE_BUCKET já existe"
+        else
+          echo "bucket_exists=false" >> $GITHUB_ENV
+          echo "bucket_exists=false" >> $GITHUB_OUTPUT
+          echo "Bucket $TFSTATE_BUCKET não existe"
+        fi
+
+    - name: Create S3 bucket for Terraform state
+      if: steps.bucket_check.outputs.bucket_exists == 'false'
+      run: |
+        echo "Criando bucket $TFSTATE_BUCKET na região $TFSTATE_REGION"
+        if [ "$TFSTATE_REGION" = "us-east-1" ]; then
+          aws s3api create-bucket --bucket $TFSTATE_BUCKET --region $TFSTATE_REGION
+        else
+          aws s3api create-bucket --bucket $TFSTATE_BUCKET --region $TFSTATE_REGION --create-bucket-configuration LocationConstraint=$TFSTATE_REGION
+        fi
+
+        # Enable versioning
+        aws s3api put-bucket-versioning --bucket $TFSTATE_BUCKET --versioning-configuration Status=Enabled
+
+        echo "Bucket $TFSTATE_BUCKET criado com sucesso com versioning"
+
+    - name: Check if backend state exists
+      id: backend_check
+      working-directory: infra
+      run: |
+        if aws s3api head-object --bucket $TFSTATE_BUCKET --key $TFSTATE_KEY 2>/dev/null; then
+          echo "state_exists=true" >> $GITHUB_ENV
+          echo "state_exists=true" >> $GITHUB_OUTPUT
+          echo "Backend tfstate encontrado no bucket $TFSTATE_BUCKET"
+          echo "Key encontrado: $TFSTATE_KEY"
+        else
+          echo "state_exists=false" >> $GITHUB_ENV
+          echo "state_exists=false" >> $GITHUB_OUTPUT
+          echo "Backend tfstate não encontrado no bucket $TFSTATE_BUCKET"
+          echo "Key: $TFSTATE_KEY será criado"
+        fi
+
+    - name: Terraform Initialization (with existing backend)
+      working-directory: infra
+      if: steps.backend_check.outputs.state_exists == 'true'
+      run: terraform init -reconfigure -backend-config="bucket=$TFSTATE_BUCKET" -backend-config="region=$TFSTATE_REGION" -backend-config="key=$TFSTATE_KEY"
+
+    - name: Terraform Initialization (new backend)
+      working-directory: infra
+      if: steps.backend_check.outputs.state_exists == 'false'
+      run: |
+        echo "Inicializando Terraform com novo backend..."
+        terraform init -backend-config="bucket=$TFSTATE_BUCKET" -backend-config="region=$TFSTATE_REGION" -backend-config="key=$TFSTATE_KEY"
+
+    - name: Terraform Plan
+      working-directory: infra
+      run: terraform plan
+
+    - name: Terraform Apply
+      working-directory: infra
+      if: github.event_name == 'push'
+      run: terraform apply -auto-approve
+
+    - name: Terraform Plan Only (for PRs)
+      working-directory: infra
+      if: github.event_name == 'pull_request'
+      run: |
+        echo "Este é um Pull Request. Executando apenas o plan:"
+        terraform plan
